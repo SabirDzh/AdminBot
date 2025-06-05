@@ -1,31 +1,14 @@
-import random
 import re
 from aiogram import *
-import asyncio
-import os
 from aiogram.types import *
-from config import TOKEN_API
 from aiogram.filters import *
-from aiogram.utils.keyboard import *
-from random import *
 from aiogram.fsm.context import *
 from aiogram.fsm.state import *
-from aiogram.filters.callback_data import *
-from aiogram.utils import *
 from aiogram.exceptions import *
-import hashlib
-import logging
-from aiogram.enums import *
-from aiogram.client.default import *
-from aiogram.utils.formatting import Text, Bold
-from datetime import datetime, date
-from AdminBot.Keyboards import *
-from aiogram.utils.media_group import MediaGroupBuilder
+from datetime import date
+from AdminBot.src.Keyboards import *
 from aiogram.enums.chat_member_status import ChatMemberStatus
-from aiogram.enums.parse_mode import ParseMode
-from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
-from contextlib import suppress
 from datetime import datetime, timedelta
 import asyncpg
 

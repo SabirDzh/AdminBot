@@ -3,8 +3,8 @@ import logging
 from aiogram import Bot, Dispatcher
 import asyncpg
 from aiogram.fsm.storage.memory import MemoryStorage
-from AdminBot.config import TOKEN_API
-from AdminBot.BotBody import command_router, message_router
+from AdminBot.src.config import TOKEN_API
+from AdminBot.src.BotBody import command_router, message_router
 
 bot = Bot(TOKEN_API)
 dp = Dispatcher(storage=MemoryStorage())
