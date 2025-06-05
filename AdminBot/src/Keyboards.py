@@ -18,4 +18,3 @@ async def button_for_capcha():
     builder.button(text="Нажмите на кнопку", callback_data="button")
     return builder.adjust(1).as_markup()
 
-f = ('g')
