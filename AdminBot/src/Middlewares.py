@@ -1,26 +1,31 @@
-# from aiogram import BaseMiddleware
-# from aiogram.types import Message
-# from aiogram import Bot, types
-# from aiogram.filters import Command
-# from aiogram.types import ChatMemberAdministrator
-# from AdminBot.config import CHANNEL_ID
-# from aiogram.types import ChatMemberOwner, ChatMemberAdministrator
-# from aiogram import BaseMiddleware
-# from aiogram.types import Message
-#
-#
-# async def is_channel_admin(bot: Bot, user_id: int, channel_id: int) -> bool:
-#     try:
-#         member = await bot.get_chat_member(chat_id=channel_id, user_id=user_id)
-#         # Проверяем, является ли пользователь создателем или администратором
-#         return isinstance(member, (ChatMemberOwner, ChatMemberAdministrator))
-#     except Exception:
-#         return False
-#
-#
-# class AdminCheckMiddleware(BaseMiddleware):
-#     async def __call__(self, handler, event: Message, data):
-#         if not await is_channel_admin(event.bot, event.from_user.id, CHANNEL_ID):
-#             await event.answer("🚫 У вас нет прав для выполнения этой команды!")
-#             return
-#         return await handler(event, data)
+import asyncio
+from tracemalloc import BaseFilter
+
+from aiogram import BaseMiddleware
+from aiogram.types import Message
+from typing import Callable, Dict, Awaitable, Any
+
+class ThrottlingMiddleware(BaseMiddleware):
+    def __init__(self, rate_limit: float = 0.5):
+        self.rate_limit = rate_limit
+        self.cache = {}  # Хранение временных меток
+
+    async def __call__(
+        self,
+        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
+        event: Message,
+        data: Dict[str, Any]
+    ) -> Any:
+        user_id = event.from_user.id
+        current_time = asyncio.get_event_loop().time()
+
+        # Проверка лимита
+        if user_id in self.cache and (current_time - self.cache[user_id]) < self.rate_limit:
+            # Блокируем обработку
+            return None
+
+        # Обновляем временную метку
+        self.cache[user_id] = current_time
+
+        return await handler(event, data)
+

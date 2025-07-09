@@ -18,4 +18,40 @@ async def button_for_capcha():
     builder.button(text="Нажмите на кнопку", callback_data="button")
     return builder.adjust(1).as_markup()
 
-f = ('g')
+
+def edit_rule_group():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Изменить правила", callback_data="edit_rule_group")
+    return builder.adjust(1).as_markup()
+
+
+async def keyboards_for_poll():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="Да")
+    builder.button(text="Нет")
+    return builder.adjust(1).as_markup(resize_keyboard=True,
+                                       one_time_keyboard=True,
+                                       is_persistent=False)
+
+
+async def keyboards_for_scheduled():
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="Сейчас")
+    builder.button(text="Позже")
+    return builder.adjust(1).as_markup(resize_keyboard=True,
+                                       one_time_keyboard=True,
+                                       is_persistent=False)
+
+
+async def keyboard_menu_setting_capcha():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Отключить капчу", callback_data="on_captcha")
+    builder.button(text="Настроить приветствие капчи", callback_data="setting_answer_capcha")
+    return builder.adjust(1).as_markup()
+
+
+async def keyboard_menu_setting_capcha_two():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Включить капчу", callback_data="off_captcha")
+    builder.button(text="Настроить приветствие капчи", callback_data="setting_answer_capcha")
+    return builder.adjust(1).as_markup()

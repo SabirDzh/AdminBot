@@ -2,9 +2,11 @@ import asyncio
 import logging
 from aiogram import Bot, Dispatcher
 import asyncpg
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from AdminBot.src.config import TOKEN_API
 from AdminBot.src.BotBody import command_router, message_router
+from AdminBot.src.handlers.helps import router
 
 bot = Bot(TOKEN_API)
 dp = Dispatcher(storage=MemoryStorage())
@@ -13,6 +15,7 @@ dp = Dispatcher(storage=MemoryStorage())
 async def main():
     dp.include_router(command_router)
     dp.include_router(message_router)
+    dp.include_router(router)
 
     try:
         pool = await asyncpg.create_pool(
@@ -39,6 +42,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
+        # FSMContext.clear()
         print("Exit")
 
 # import asyncio
