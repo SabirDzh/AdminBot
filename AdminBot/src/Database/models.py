@@ -24,16 +24,3 @@ CREATE_TABLE = """
                )
                    ); 
                """
-
-DATABASE_DESIGN = {
-    # is_ban
-    # user_id
-    # chat_id
-    # total_bans
-    # reason
-    # ban_date
-    # who_banned
-    # record_number_of_bans_in_a_month
-    # last_ban_date
-    #
-}

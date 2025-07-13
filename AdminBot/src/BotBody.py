@@ -1,5 +1,8 @@
 import re
 import asyncio
+import token
+from sys import thread_info
+
 from aiogram import *
 from aiogram.enums import ParseMode
 from aiogram.handlers import callback_query
@@ -28,14 +31,12 @@ command_router = Router()
 message_router = Router()
 
 dp = Dispatcher()
-command_router.message.middleware(ThrottlingMiddleware(rate_limit=1.5))
+command_router.message.middleware(ThrottlingMiddleware(rate_limit=0))
 
 # client = TelegramClient("denote_all", API_ID, API_HASH)
 # client.start()
 
 HELP_COMMAND = '''
-<b>/start</b> - <em>запуск бота</em>
-<b>/help</b> - <em>список всех команд</em>
 <b>/status</b> - <em>узнать статус</em>
 <b>/rules</b> - <em>правила группы</em>
 <b>/id</b> - <em>ваш id</em>
@@ -44,7 +45,7 @@ HELP_COMMAND = '''
 <b>/unmute</b> - <em>размутить</em>
 <b>/unban</b> - <em>разбанить</em>
 <b>/warn</b> - <em>предупреждение</em>
-<b>/unwarn</b> - <em>убрать предупреждение</em>
+<b>/unwarn</b> - <em>(НЕ ГОТОВА)</em>
 <b>/stat</b> - <em>статистика за неделю</em>
 <b>/activ</b> - <em>самые активные</em>
 <b>/total_warn</b> - <em>больше всего предупреждений</em>
@@ -151,13 +152,11 @@ async def count_message(message: Message, pool: asyncpg.Pool):
 @command_router.message(F.chat.type != "private", Command("rules"))
 async def rules_cmd(message: Message, pool: asyncpg.Pool):
     async with pool.acquire() as conn:
-        # Только получаем правила БЕЗ перезаписи
         result = await conn.fetchval(
             "SELECT rules FROM group_rules WHERE group_id = $1",
             message.chat.id
         )
 
-        # Если правил нет - инициализируем базовыми
         if not result:
             result = RULES_COMMAND
             await conn.execute(
@@ -217,14 +216,6 @@ async def id_cmd(message: Message):
     await message.reply(f"Ваш id: {message.from_user.id}")
 
 
-async def is_admin(message: Message, bot: Bot) -> bool:
-    try:
-        user_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        return isinstance(user_member, (ChatMemberAdministrator, ChatMemberOwner))
-    except TelegramBadRequest:
-        return False
-
-
 def parse_time(time_str: str | None) -> datetime | None:
     if not time_str:
         return None
@@ -251,37 +242,47 @@ def parse_time(time_str: str | None) -> datetime | None:
     return now + time_units.get(unit, timedelta(0)) if unit in time_units else None
 
 
-async def is_check(message: Message):
-    reply = message.reply_to_message
-    usr = message.from_user.id
-    if not reply or reply.from_user.is_bot or not reply.from_user.id != usr:
-        return False
-    return True
-
-
 @command_router.message(F.chat.type != "private", Command("mute"))
 async def mute_cmd(message: Message, command: CommandObject, bot: Bot):
-    if not await is_check(message):
-        await message.reply("Используйте эту команду в ответ на сообщение пользователя")
+    if not message.reply_to_message:
+        await message.reply("❗ Используйте эту команду в ответ на сообщение пользователя")
         return
 
-    if not await is_admin(message, bot):
-        await message.reply("У вас нет прав администратора!")
-        return
+    target_user = await bot.get_chat_member(chat_id=message.chat.id,
+                                            user_id=message.reply_to_message.from_user.id)
+    user = await bot.get_chat_member(chat_id=message.chat.id,
+                                     user_id=message.from_user.id)
+    bot_member = await bot.get_chat_member(chat_id=message.chat.id,
+                                           user_id=bot.id)
+    reply_member = message.reply_to_message.from_user
+
+    check = AllCheck(user.status, target_user.status, bot_member, reply_member)
 
     mute_time = parse_time(command.args)
     if not mute_time:
         await message.reply("Неверный формат времени. Пример: /mute 1h")
         return
 
-    target_user = message.reply_to_message.from_user
-    mention = target_user.mention_html(target_user.first_name)
+    mention = reply_member.mention_html(reply_member.username)
+
+    await check.is_status(message)
+    await check.is_member_bot(message)
+    await check.is_can_ban(message)
+    result = await check.result_check()
+
+    if result == False:
+        return
 
     try:
+        if reply_member.is_bot:
+            return await message.reply(text="Бота нельзя замутить")
+
         await bot.restrict_chat_member(
             chat_id=message.chat.id,
-            user_id=target_user.id,
-            permissions=ChatPermissions(can_send_messages=False),
+            user_id=reply_member.id,
+            permissions=ChatPermissions(can_send_messages=False, can_send_media_messages=False, can_send_polls=False,
+                                        can_send_audios=False, can_send_documents=False, can_send_stickers=False,
+                                        can_send_gifs=False, can_add_web_page_previews=False),
             until_date=mute_time
         )
         await message.answer(
@@ -293,25 +294,38 @@ async def mute_cmd(message: Message, command: CommandObject, bot: Bot):
 
 @command_router.message(F.chat.type != "private", Command("unmute"))
 async def unmute_cmd(message: Message, bot: Bot):
-    reply_message = message.reply_to_message
-
-    if reply_message is None:
-        await message.reply("Используйте эту команду в ответ на сообщение")
+    if not message.reply_to_message:
+        await message.reply("❗ Используйте эту команду в ответ на сообщение пользователя")
         return
 
-    if not await is_check(message):
-        await message.reply("Используйте эту команду в ответ на сообщение")
+    target_user = await bot.get_chat_member(chat_id=message.chat.id,
+                                            user_id=message.reply_to_message.from_user.id)
+    user = await bot.get_chat_member(chat_id=message.chat.id,
+                                     user_id=message.from_user.id)
+    bot_member = await bot.get_chat_member(chat_id=message.chat.id,
+                                           user_id=bot.id)
+    reply_member = message.reply_to_message.from_user
+
+    check = AllCheck(user.status, target_user.status, bot_member, reply_member)
+    await check.is_status(message)
+    await check.is_member_bot(message)
+    await check.is_can_ban(message)
+    result = await check.result_check()
+
+    if result == False:
         return
 
-    if not await is_admin(message, bot):
-        await message.reply("У вас нет прав администратора")
-        return
+    mention = reply_member.mention_html(reply_member.username)
 
-    mention = reply_message.from_user.mention_html(reply_message.from_user.first_name)
+    if reply_member.is_bot:
+        return await message.reply(text="Бота нельзя размутить")
 
-    await bot.restrict_chat_member(chat_id=message.chat.id, user_id=reply_message.from_user.id,
-                                   permissions=ChatPermissions(can_send_messages=True,
-                                                               can_send_other_messages=True))
+    await bot.restrict_chat_member(chat_id=message.chat.id, user_id=reply_member.id,
+                                   permissions=ChatPermissions(can_send_messages=False, can_send_media_messages=False,
+                                                               can_send_polls=False,
+                                                               can_send_audios=False, can_send_documents=False,
+                                                               can_send_stickers=False,
+                                                               can_send_gifs=False, can_add_web_page_previews=False))
     await message.answer(f"Все ограничения с пользователя <b>{mention}</b> были сняты",
                          parse_mode="HTML")
 
@@ -332,62 +346,41 @@ async def status_cmd(message: Message, bot: Bot):
                          parse_mode="HTML")
 
 
-def can_ban_user(admin_status: str, target_status: str) -> bool:
-    """Проверяет, может ли администратор забанить пользователя"""
-    # Создатель может забанить кого угодно
-    if admin_status == "creator":
-        return target_status != "creator"
-
-    # Администратор может забанить обычных пользователей и других админов с меньшими правами
-    if admin_status == "administrator":
-        return target_status not in ("creator", "administrator")
-
-    return False
-
-
-async def is_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
-    """Проверяет, является ли пользователь администратором"""
-    try:
-        member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
-        return member.status in ("administrator", "creator")
-    except Exception:
-        return False
-
-
 @command_router.message(F.chat.type != "private", F.text.startswith("/ban"))
 async def ban_cmd(message: Message, bot: Bot, pool: asyncpg.Pool):
     if not message.reply_to_message:
-        await message.reply("🚫 Используйте команду в ответ на сообщение пользователя")
+        await message.reply("❗ Используйте эту команду в ответ на сообщение пользователя")
         return
 
-        # Извлекаем информацию о пользователях
-    admin_id = message.from_user.id
-    target_user = message.reply_to_message.from_user
-    chat_id = message.chat.id
+    target_user = await bot.get_chat_member(chat_id=message.chat.id,
+                                            user_id=message.reply_to_message.from_user.id)
+    user = await bot.get_chat_member(chat_id=message.chat.id,
+                                     user_id=message.from_user.id)
+    bot_member = await bot.get_chat_member(chat_id=message.chat.id,
+                                           user_id=bot.id)
+    reply_member = message.reply_to_message.from_user
 
-    # Извлекаем причину бана (если есть)
-    reason = " ".join(message.text.split()[1:]) or "Не указана"
+    check = AllCheck(user.status, target_user.status, bot_member, reply_member)
+    await check.is_status(message)
+    await check.is_member_bot(message)
+    await check.is_can_ban(message)
+    await check.is_ban(message)
+    result = await check.result_check()
+
+    if result == False:
+        return
+
+    reason = " ".join(message.text.split(" ")[1:]) or "Без причины"
 
     try:
-        # Получаем информацию о правах пользователей
-        admin_member = await bot.get_chat_member(chat_id=chat_id, user_id=admin_id)
-        target_member = await bot.get_chat_member(chat_id=chat_id, user_id=target_user.id)
-
-        # Проверяем права на бан
-        if not can_ban_user(admin_member.status, target_member.status):
-            await message.reply("⛔ У вас недостаточно прав для бана этого пользователя")
-            return
-
-        # Выполняем бан через Telegram API
         await bot.ban_chat_member(
-            chat_id=chat_id,
-            user_id=target_user.id,
+            chat_id=message.chat.id,
+            user_id=message.reply_to_message.from_user.id,
             revoke_messages=True
         )
 
-        # Формируем сообщение
-        mention_admin = message.from_user.mention_html(message.from_user.first_name)
-        mention_target = target_user.mention_html(target_user.first_name)
+        mention_admin = message.from_user.mention_html(message.from_user.username)
+        mention_target = reply_member.mention_html(reply_member.username)
 
         response = (
             f"🚷 Пользователь {mention_target} забанен.\n"
@@ -395,7 +388,6 @@ async def ban_cmd(message: Message, bot: Bot, pool: asyncpg.Pool):
             f"📝 Причина: {reason}"
         )
 
-        # Сохраняем в базу данных
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -408,15 +400,13 @@ async def ban_cmd(message: Message, bot: Bot, pool: asyncpg.Pool):
                     banned_by
                 ) VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                chat_id,
-                target_user.id,
+                message.chat.id,
+                reply_member.id,
                 reason,
                 datetime.now(),
                 True,
-                admin_id
+                message.from_user.id
             )
-
-        # Отправляем подтверждение
         await message.reply(response, parse_mode="HTML")
 
     except Exception as e:
@@ -424,44 +414,51 @@ async def ban_cmd(message: Message, bot: Bot, pool: asyncpg.Pool):
 
 
 @command_router.message(F.chat.type != "private", Command("unban"))
-async def unban_cmd(message: Message, bot: Bot):
-    member = await bot.get_chat_member(chat_id=message.chat.id, user_id=message.from_user.id)
-    status = member.status
-
-    if message.reply_to_message is None:
-        await message.reply("Используйте эту команду в ответ на сообщение пользователя")
+async def unban_cmd(message: Message, bot: Bot, pool: asyncpg.Pool):
+    if not message.reply_to_message:
+        await message.reply("❗ Используйте эту команду в ответ на сообщение пользователя")
         return
 
-    member_reply_user = await bot.get_chat_member(chat_id=message.chat.id,
-                                                  user_id=message.reply_to_message.from_user.id)
-    status_user = member_reply_user.status
+    target_user = await bot.get_chat_member(chat_id=message.chat.id,
+                                            user_id=message.reply_to_message.from_user.id)
+    user = await bot.get_chat_member(chat_id=message.chat.id,
+                                     user_id=message.from_user.id)
+    bot_member = await bot.get_chat_member(chat_id=message.chat.id,
+                                           user_id=bot.id)
+    reply_member = message.reply_to_message.from_user
 
-    if not await is_check(message):
-        await message.reply("Используйте эту команду в ответ на сообщение пользователя")
+    check = AllCheck(user.status, target_user.status, bot_member, reply_member)
+    await check.is_status(message)
+    await check.is_member_bot(message)
+    await check.is_can_ban(message)
+    await check.is_unban(message)
+
+    result = await check.result_check()
+    if result == False:
         return
 
-    target_user = message.reply_to_message.from_user
-    mention = target_user.mention_html(target_user.first_name)
+    try:
+        # Выполняем разбан
+        await bot.unban_chat_member(
+            chat_id=message.chat.id,
+            user_id=message.reply_to_message.from_user.id,
+            only_if_banned=True
+        )
 
-    # if not await is_admin(message, bot):
-    #     await message.reply("У вас нет прав администратора")
-    #     return
+        # Обновляем статус в базе данных
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE ban_user_adm_bot SET is_ban = FALSE "
+                "WHERE chat_id = $1 AND user_id = $2",
+                message.chat.id, reply_member.id
+            )
 
-    if status == "administrator":
-        if status_user == "administrator" and status_user == ChatMemberStatus.KICKED:
-            await message.reply("Вы не можете разбанить равного по званию")
-            return
-        elif status_user != ChatMemberStatus.KICKED:
-            await message.reply("Пользователь не забанен")
-            return
-        await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_user.id, only_if_banned=True)
-        await message.answer(f"Пользователь <b>{mention}</b> разбанен",
-                             parse_mode="HTML")
+        # Формируем сообщение об успехе
+        mention = reply_member.mention_html(reply_member.username)
+        await message.answer(f"🔓 Пользователь <b>{mention}</b> разбанен", parse_mode="HTML")
 
-    elif status == "creator" and status_user == ChatMemberStatus.KICKED:
-        await bot.unban_chat_member(chat_id=message.chat.id, user_id=target_user.id)
-        await message.answer(f"Пользователь <b>{mention}</b> разбанен",
-                             parse_mode="HTML")
+    except Exception as e:
+        await message.reply(f"❌ Произошла ошибка при разбане пользователя: {str(e)}")
 
 
 @command_router.message(Command("captcha"))
@@ -744,57 +741,72 @@ async def capcha_command_keyboard_activated(callback: CallbackQuery, bot: Bot, s
 
 @command_router.message(F.chat.type != "private", Command("warn"))
 async def warn_cmd(message: Message, bot: Bot, pool: asyncpg.Pool):
-    message_reply = message.reply_to_message
-
-    if message_reply is None:
-        await message.reply("Используйте эту команду в ответ на сообщение пользователя")
+    if not message.reply_to_message:
+        await message.reply("❗ Используйте эту команду в ответ на сообщение пользователя")
         return
 
-    if not await is_check(message):
-        await message.reply("Используйте эту команду в ответ на сообщение пользователя")
+    target_user = await bot.get_chat_member(chat_id=message.chat.id,
+                                            user_id=message.reply_to_message.from_user.id)
+    user = await bot.get_chat_member(chat_id=message.chat.id,
+                                     user_id=message.from_user.id)
+    bot_member = await bot.get_chat_member(chat_id=message.chat.id,
+                                           user_id=bot.id)
+    reply_member = message.reply_to_message.from_user
+
+    check = AllCheck(user.status, target_user.status, bot_member, reply_member)
+    await check.is_status(message)
+    await check.is_member_bot(message)
+    await check.is_can_ban(message)
+    result = await check.result_check()
+
+    if result == False:
         return
-    elif not await is_admin(message, bot):
-        await message.reply("У вас нет прав администратора")
-        return
+
+    if reply_member.is_bot:
+        return await message.reply(text="Нельзя выдавать предупреждения боту")
+
+    username = message.reply_to_message.from_user.username
+    if username is None:
+        username = message.from_user.first_name
 
     async with pool.acquire() as conn:
         await conn.execute(
             """
-            INSERT INTO warn (user_id, warn_count, total_warn)
-            VALUES ($1, 1, 1) ON CONFLICT (user_id) 
+            INSERT INTO warn (user_id, warn_count, total_warn, chat_id, by_warn)
+            VALUES ($1, 1, 1, $2, $3) ON CONFLICT (user_id) 
             DO
             UPDATE SET
                 warn_count = warn.warn_count + 1,
                 total_warn = warn.total_warn + 1
             """,
-            message_reply.from_user.id
+            reply_member.id, message.chat.id, username
         )
 
         warn_count = await conn.fetchval(
-            "select warn_count from warn where user_id = $1",
-            message_reply.id
+            "select warn_count from warn where user_id = $1 and chat_id = $2",
+            reply_member.id, message.chat.id
         )
 
         is_banned = await conn.fetchval(
-            "select ban from warn where user_id = $1",
-            message_reply.id
+            "select ban from warn where user_id = $1 and chat_id = $2",
+            reply_member.id, message.chat.id
         )
 
     chat = (await bot.get_chat(message.chat.id)).title
     if is_banned:
         try:
-            await bot.ban_chat_member(user_id=message_reply.from_user.id, chat_id=message.chat.id)
-            await bot.send_message(message_reply.from_user.id,
-                                   f"{message_reply.from_user.mention_html()} был заблокирован за нарушения в группе <b>{chat}</b>",
+            await bot.ban_chat_member(user_id=reply_member.id, chat_id=message.chat.id)
+            await bot.send_message(reply_member.from_user.id,
+                                   f"{reply_member.mention_html()} был заблокирован за нарушения в группе <b>{chat}</b>",
                                    parse_mode="HTML")
             return
         except TelegramForbiddenError:
             await bot.send_message(message.chat.id,
-                                   f"{message_reply.from_user.mention_html()} был заблокирован за нарушения в группе <b>{chat}</b>",
+                                   f"{reply_member.mention_html()} был заблокирован за нарушения в группе <b>{chat}</b>",
                                    parse_mode="HTML")
             return
 
-    await message.answer(f"⚠️ Пользователь {message_reply.from_user.mention_html()} получил предупреждение.\n"
+    await message.answer(f"⚠️ Пользователь {reply_member.mention_html()} получил предупреждение.\n"
                          f"Текущее количество: {warn_count}/3",
                          parse_mode="HTML")
 
@@ -1008,49 +1020,46 @@ async def cmd_chat_id(message: Message):
 
 @command_router.message(F.chat.type != "private", Command("kick"))
 async def cmd_kik_users(message: Message, bot: Bot):
-    reply_message = message.reply_to_message
-
-    if not reply_message:
-        await message.reply("Вы не отметили сообщение")
+    if not message.reply_to_message:
+        await message.reply("❗ Используйте эту команду в ответ на сообщение пользователя")
         return
 
-    member = await bot.get_chat_member(chat_id=message.chat.id, user_id=message.from_user.id)
-    status = member.status
+    target_user = await bot.get_chat_member(chat_id=message.chat.id,
+                                            user_id=message.reply_to_message.from_user.id)
+    user = await bot.get_chat_member(chat_id=message.chat.id,
+                                     user_id=message.from_user.id)
+    bot_member = await bot.get_chat_member(chat_id=message.chat.id,
+                                           user_id=bot.id)
+    reply_member = message.reply_to_message.from_user
 
-    reply_member = await bot.get_chat_member(chat_id=message.chat.id, user_id=message.reply_to_message.from_user.id)
-    reply_user_status = reply_member.status
+    check = AllCheck(user.status, target_user.status, bot_member, reply_member)
+    await check.is_status(message)
+    await check.is_member_bot(message)
+    await check.is_can_ban(message)
+    result = await check.result_check()
 
-    bot_member = await bot.get_chat_member(chat_id=message.chat.id, user_id=bot.id)
-
-    d: dict = {1: "У пользователя нет прав", 2: "Пользователь выше по званию", 3: "Пользователь равен по званию",
-               4: "У бота недостаточно прав",
-               5: "Нельзя кикнуть бота", 6: True, 7: "Пользователь исключен", 8: "Пользователь покинул группу"}
-
-    reply_user = message.reply_to_message.from_user
-
-    result = await is_check_all_rules(status, reply_user_status, reply_user, bot_member)
-    if d.get(result) != True:
-        await message.reply(d.get(result))
+    if result == False:
         return
-    elif d.get(result) == True:
-        reason = " ".join(message.text.split(" ")[1:]) or "Без причины"
 
-        try:
-            await bot.ban_chat_member(chat_id=message.chat.id,
-                                      user_id=reply_message.from_user.id,
-                                      until_date=timedelta(seconds=30))
+    reason = " ".join(message.text.split(" ")[1:]) or "Без причины"
 
-            user_name = reply_user.username or reply_user.first_name
-            safe_reason = html.escape(reason)
+    if reply_member.is_bot:
+        return await message.reply(text="Бота нельзя кикнуть")
 
-            await message.answer(f"Пользователь @{user_name} был кикнут из группы\nПричина:\n<b>{safe_reason}</b>",
-                                 parse_mode="HTML")
+    try:
+        await bot.ban_chat_member(chat_id=message.chat.id,
+                                  user_id=reply_member.id,
+                                  until_date=timedelta(seconds=30))
 
-        except Exception as e:
-            await message.reply(f"Неизвестная ошибка: {e}")
-            logging.error(f"Ошибка при исключении пользователя: {e}")
-    else:
-        await message.answer("Неизвестная ошибка")
+        user_name = reply_member.username or reply_member.first_name
+        safe_reason = html.escape(reason)
+
+        await message.answer(f"Пользователь @{user_name} был кикнут из группы\nПричина:\n<b>{safe_reason}</b>",
+                             parse_mode="HTML")
+
+    except Exception as e:
+        await message.reply(f"Неизвестная ошибка: {e}")
+        logging.error(f"Ошибка при исключении пользователя: {e}")
 
 
 @command_router.message(F.text.startswith("/report"), F.chat.type == "private")
@@ -1086,3 +1095,32 @@ async def cmd_support_text(message: Message, bot: Bot, state: FSMContext):
     except Exception as e:
         await bot.send_message(chat_id=1354347859,
                                text=f"Ошибка: {e}")
+
+
+@command_router.message(Command("total_warn"))
+async def cmd_total_warn(message: Message, pool: asyncpg.Pool):
+    async with pool.acquire() as conn:
+        result = await conn.fetch(
+            """
+            select by_warn, total_warn from warn 
+            order by total_warn desc LIMIT 3;
+            """
+        )
+
+    if len(result) < 3:
+        result.append({"by_warn": "unknown", "total_warn": 0})
+
+    first_user = result[0]
+    second_user = result[1]
+    third_user = result[2]
+
+
+    await message.reply(
+        text=f"🥇1 место: {first_user["by_warn"]} - {first_user["total_warn"]}\n🥈2 место: {second_user["by_warn"]} - {second_user["total_warn"]}\n🥉3 место: {third_user["by_warn"]} - {second_user["total_warn"]}",
+        parse_mode="HTML")
+
+
+@command_router.message(Command("unwarn"))
+async def cmd_unwarn(message: Message, pool: asyncpg.Pool):
+    pass
+
