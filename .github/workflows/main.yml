@@ -1,0 +1,26 @@
+name: main.py CD
+
+on:
+  push:
+    branches: [ main ] 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest 
+
+    steps:
+    - name: Deploy using ssh 
+      uses: appleboy/ssh-action@master 
+      with:
+        host: ${{ secrets.HOST }} 
+        username: ${{ secrets.USERNAME }}
+        key: ${{ secrets.PRIVATE_KEY }} 
+        port: 22
+        script: |
+          cd ~/AdminBot/AdminBot/src
+          git pull origin main
+          source .venv/bin/activate
+          pip install -U pip
+          pip install -r requirements.txt
+          git status 
+          pm2 restart tg-bot 
